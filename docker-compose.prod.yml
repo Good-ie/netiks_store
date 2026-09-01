@@ -1,0 +1,15 @@
+services:
+  web:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/web:v1.0.0
+  gateway:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/gateway:v1.0.0
+  identity-service:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/identity-service:v1.0.0
+  vendor-service:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/vendor-service:v1.0.0
+  catalog-service:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/catalog-service:v1.0.0
+  media-service:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/media-service:v1.0.0
+  admin-service:
+    image: 699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store/admin-service:v1.0.0
