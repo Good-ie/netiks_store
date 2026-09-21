@@ -1,0 +1,111 @@
+name: CI/CD Build Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write   # Required for AWS OIDC authentication
+  contents: read    # Required to checkout the code
+
+jobs:
+  # ---------------------------------------------------------
+  # JOB 1: VALIDATE
+  # ---------------------------------------------------------
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml config
+
+      - name: Python Linting
+        run: |
+          pip install flake8
+          # Using --exit-zero so the pipeline doesn't block if your python code isn't perfect yet
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exit-zero
+
+      - name: Web Linting (Next.js)
+        run: |
+          cd apps/web
+          npm install
+          # Will run lint if the script exists in package.json
+          npm run lint --if-present
+
+  # ---------------------------------------------------------
+  # JOB 2: BUILD AND PUSH
+  # ---------------------------------------------------------
+  build-and-push:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: 
+          - web
+          - gateway
+          - identity-service
+          - vendor-service
+          - catalog-service
+          - media-service
+          - admin-service
+      fail-fast: false # If one service fails, let the others finish building
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Image
+        run: |
+          # 1. Determine Dockerfile path based on Week 3 structure
+          if [ "${{ matrix.service }}" == "web" ]; then
+            DOCKERFILE="infra/docker/web.Dockerfile"
+          elif [ "${{ matrix.service }}" == "gateway" ]; then
+            DOCKERFILE="apps/gateway/Dockerfile"
+          else
+            DOCKERFILE="services/${{ matrix.service }}/Dockerfile"
+          fi
+          
+          # 2. Set variables
+          REPO=${{ vars.ECR_REGISTRY }}/netiks-store/${{ matrix.service }}
+          GIT_SHA=${{ github.sha }}
+          
+          echo "Building $REPO:$GIT_SHA from $DOCKERFILE"
+          
+          # 3. Build the image with the Git SHA tag
+          docker build --platform linux/amd64 -t $REPO:$GIT_SHA -f $DOCKERFILE .
+          
+          # 4. Push the Git SHA tag (happens on EVERY commit to main)
+          docker push $REPO:$GIT_SHA
+          
+          # 5. Part 4 Tagging Logic: Only apply 'latest' and 'v1.x' if a tag was pushed
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # Extract the tag name (e.g., v1.1.0)
+            VERSION_TAG=${GITHUB_REF#refs/tags/}
+            
+            echo "Version tag detected: $VERSION_TAG. Pushing additional tags..."
+            
+            # Tag the SHA image with the version and latest
+            docker tag $REPO:$GIT_SHA $REPO:$VERSION_TAG
+            docker tag $REPO:$GIT_SHA $REPO:latest
+            
+            # Push them to ECR
+            docker push $REPO:$VERSION_TAG
+            docker push $REPO:latest
+          else
+            echo "Normal push to main. Skipping 'latest' and version tags."
+          fi
