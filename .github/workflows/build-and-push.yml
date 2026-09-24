@@ -117,7 +117,6 @@ jobs:
           else
             echo "Normal push to main. Skipping 'latest' and version tags."
           fi
-
 # ---------------------------------------------------------
   # JOB 3: DEPLOY (WEEK 5 EXTENSION)
   # ---------------------------------------------------------
@@ -134,7 +133,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
+          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD
           script: |
             set -e
 
@@ -145,15 +144,23 @@ jobs:
             git fetch --tags origin
             git checkout --force "$VERSION"
 
-            # 1. Export AWS credentials passed securely from GitHub Secrets
+            # 1. Dynamically write the production .env file from secrets
+            cat <<EOF > .env
+            POSTGRES_DB=${POSTGRES_DB:-netiks_db}
+            POSTGRES_USER=${POSTGRES_USER:-netiks_user}
+            POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_password}
+            TAG=${VERSION}
+            EOF
+
+            # 2. Export AWS credentials passed securely from GitHub Secrets
             export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
             export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
             export AWS_DEFAULT_REGION="us-east-1"
 
-            # 2. Authenticate Docker with Amazon ECR dynamically on the EC2 host
+            # 3. Authenticate Docker with Amazon ECR
             aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 699475922919.dkr.ecr.us-east-1.amazonaws.com
 
-            # 3. Pull and update production containers
+            # 4. Pull and update production containers
             docker compose \
               -f docker-compose.yml \
               -f docker-compose.prod.yml \
