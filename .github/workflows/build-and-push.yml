@@ -1,4 +1,4 @@
-name: CI/CD Build Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -9,13 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Tag to deploy, e.g. v1.1.0'
+        description: 'Tag to deploy to production, e.g. v1.1.0'
         required: true
         type: string
 
 permissions:
-  id-token: write   # Required for AWS OIDC authentication
-  contents: read    # Required to checkout the code
+  id-token: write
+  contents: read
 
 jobs:
   # ---------------------------------------------------------
@@ -35,15 +35,7 @@ jobs:
       - name: Python Linting
         run: |
           pip install flake8
-          # Using --exit-zero so the pipeline doesn't block if your python code isn't perfect yet
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exit-zero
-
-      - name: Web Linting (Next.js)
-        run: |
-          cd apps/web
-          npm install
-          # Will run lint if the script exists in package.json
-          npm run lint --if-present || true
 
   # ---------------------------------------------------------
   # JOB 2: BUILD AND PUSH
@@ -53,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: 
+        service:
           - web
           - gateway
           - identity-service
@@ -61,7 +53,7 @@ jobs:
           - catalog-service
           - media-service
           - admin-service
-      fail-fast: false # If one service fails, let the others finish building
+      fail-fast: false
 
     steps:
       - name: Checkout Code
@@ -79,7 +71,6 @@ jobs:
 
       - name: Build and Push Image
         run: |
-          # 1. Determine Dockerfile path based on Week 3 structure
           if [ "${{ matrix.service }}" == "web" ]; then
             DOCKERFILE="infra/docker/web.Dockerfile"
           elif [ "${{ matrix.service }}" == "gateway" ]; then
@@ -87,80 +78,93 @@ jobs:
           else
             DOCKERFILE="services/${{ matrix.service }}/Dockerfile"
           fi
-          
-          # 2. Set variables
-          REPO=${{ vars.ECR_REGISTRY }}/netiks-store/${{ matrix.service }}
+
+          REPO=${{ steps.login-ecr.outputs.registry }}/netiks-store/${{ matrix.service }}
           GIT_SHA=${{ github.sha }}
-          
-          echo "Building $REPO:$GIT_SHA from $DOCKERFILE"
-          
-          # 3. Build the image with the Git SHA tag
+
           docker build --platform linux/amd64 -t $REPO:$GIT_SHA -f $DOCKERFILE .
-          
-          # 4. Push the Git SHA tag (happens on EVERY commit to main)
           docker push $REPO:$GIT_SHA
-          
-          # 5. Part 4 Tagging Logic: Only apply 'latest' and 'v1.x' if a tag was pushed
+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # Extract the tag name (e.g., v1.1.0)
             VERSION_TAG=${GITHUB_REF#refs/tags/}
-            
-            echo "Version tag detected: $VERSION_TAG. Pushing additional tags..."
-            
-            # Tag the SHA image with the version and latest
             docker tag $REPO:$GIT_SHA $REPO:$VERSION_TAG
             docker tag $REPO:$GIT_SHA $REPO:latest
-            
-            # Push them to ECR
             docker push $REPO:$VERSION_TAG
             docker push $REPO:latest
-          else
-            echo "Normal push to main. Skipping 'latest' and version tags."
           fi
-# ---------------------------------------------------------
-  # JOB 3: DEPLOY (WEEK 5 EXTENSION)
+
   # ---------------------------------------------------------
-  deploy:
+  # JOB 3: AUTOMATIC STAGING DEPLOYMENT (WEEK 6)
+  # ---------------------------------------------------------
+  deploy-staging:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Deploy to staging over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /home/deploy/netiks_store-staging
+
+            git fetch origin main
+            git checkout --force main
+            git reset --hard origin/main
+
+            export IMAGE_TAG="${{ github.sha }}"
+            export REGISTRY="699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store"
+
+            aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 699475922919.dkr.ecr.us-east-1.amazonaws.com
+
+            docker compose \
+              -p netiks_staging \
+              -f docker-compose.yml \
+              -f docker-compose.staging.yml \
+              pull
+
+            docker compose \
+              -p netiks_staging \
+              -f docker-compose.yml \
+              -f docker-compose.staging.yml \
+              up -d
+
+            docker compose -p netiks_staging ps
+
+  # ---------------------------------------------------------
+  # JOB 4: PRODUCTION DEPLOYMENT WITH APPROVAL GATE
+  # ---------------------------------------------------------
+  deploy-production:
     needs: build-and-push
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
 
     steps:
-      - name: Deploy over SSH
+      - name: Deploy to production over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD
           script: |
             set -e
 
-            cd ~/netiks_store
+            cd /home/deploy/netiks_store
 
             VERSION="${{ inputs.version || github.ref_name }}"
 
             git fetch --tags origin
             git checkout --force "$VERSION"
 
-            # 1. Dynamically write the production .env file from secrets
-            cat <<EOF > .env
-            POSTGRES_DB=${POSTGRES_DB:-netiks_db}
-            POSTGRES_USER=${POSTGRES_USER:-netiks_user}
-            POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_password}
-            TAG=${VERSION}
-            EOF
-
-            # 2. Export AWS credentials passed securely from GitHub Secrets
-            export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
-            export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
-            export AWS_DEFAULT_REGION="us-east-1"
-
-            # 3. Authenticate Docker with Amazon ECR
             aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 699475922919.dkr.ecr.us-east-1.amazonaws.com
 
-            # 4. Pull and update production containers
             docker compose \
               -f docker-compose.yml \
               -f docker-compose.prod.yml \
@@ -171,7 +175,4 @@ jobs:
               -f docker-compose.prod.yml \
               up -d
 
-            docker compose \
-              -f docker-compose.yml \
-              -f docker-compose.prod.yml \
-              ps
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
