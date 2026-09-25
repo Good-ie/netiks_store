@@ -163,6 +163,9 @@ jobs:
             git fetch --tags origin
             git checkout --force "$VERSION"
 
+            export IMAGE_TAG="$VERSION"
+            export REGISTRY="699475922919.dkr.ecr.us-east-1.amazonaws.com/netiks-store"
+
             aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 699475922919.dkr.ecr.us-east-1.amazonaws.com
 
             docker compose \
