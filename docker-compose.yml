@@ -114,7 +114,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "${POSTGRES_EXPOSE_PORT:-5432}:5432"
+      - #"${POSTGRES_EXPOSE_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-netiks_store}"]
       interval: 5s
@@ -126,8 +126,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "${REDIS_EXPOSE_PORT:-6379}:6379"
+    # $ports:
+      # - "${REDIS_EXPOSE_PORT:-6379}:6379"
 
 volumes:
   postgres_data:
