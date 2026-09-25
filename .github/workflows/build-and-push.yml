@@ -160,7 +160,7 @@ jobs:
 
             VERSION="${{ inputs.version || github.ref_name }}"
 
-            git fetch --tags origin
+            git fetch --tags --force origin
             git checkout --force "$VERSION"
 
             export IMAGE_TAG="$VERSION"
